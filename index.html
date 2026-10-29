@@ -16,8 +16,8 @@
   h1{font-size:20px;margin:4px 0 2px}
   .sub{color:var(--muted);font-size:13px;margin:0 0 14px}
   .stage{position:relative;aspect-ratio:1/1;background:#000;border-radius:16px;overflow:hidden;border:1px solid var(--line)}
-  video,.stage img{width:100%;height:100%;object-fit:cover;display:block}
-  .frame{position:absolute;inset:14%;border:2px dashed rgba(255,255,255,.55);border-radius:10px;pointer-events:none}
+  video,.stage img{width:100%;height:100%;object-fit:cover;display:block;transform-origin:center}
+  .frame{position:absolute;inset:8%;border:2px dashed rgba(255,255,255,.55);border-radius:10px;pointer-events:none}
   .placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
     gap:8px;color:var(--muted);font-size:14px;text-align:center;padding:20px}
   .placeholder .big{font-size:48px}
@@ -88,6 +88,10 @@
   </div>
   <div class="status" id="status"></div>
 
+  <div class="seg" id="zoomRow" style="display:none">확대
+    <input type="range" id="zoom" min="1" max="5" step="0.1" value="2" style="flex:1">
+    <span id="zoomVal" style="min-width:36px;text-align:right">2.0x</span>
+  </div>
   <div class="seg">인식 간격
     <select id="interval">
       <option value="1500">1.5초</option>
@@ -108,7 +112,7 @@
   </div>
 </main>
 
-<canvas id="cv" width="448" height="448" style="display:none"></canvas>
+<canvas id="cv" width="640" height="640" style="display:none"></canvas>
 <canvas id="small" width="16" height="16" style="display:none"></canvas>
 
 <script>
@@ -119,7 +123,7 @@ let sampleFn=null;
 let stream=null, timer=null, busy=false, lastSig=null, backoffUntil=0, lastIso='';
 const hist=[];
 
-const PROMPT = `You are a national-flag recognizer. Look at the image and identify the national (or well-known territory/organization) flag in it.
+const PROMPT = `You are a national-flag recognizer. The flag may be small, far away, blurry or at an angle; look carefully at all parts of the image and identify the national (or well-known territory/organization) flag in it.
 Reply with ONLY a JSON object, no other text:
 {"flag":true|false,"iso2":"two-letter ISO code lowercase or empty","name_ko":"Korean country name","name_en":"English name","confidence":0.0-1.0,"hint":"one short Korean sentence on the deciding visual feature, mention a look-alike flag if relevant"}
 If no flag is clearly visible, set "flag":false and leave other fields empty.`;
@@ -205,8 +209,9 @@ function canvasToBlob(){ return new Promise(res=>cv.toBlob(res,'image/jpeg',0.82
 function blobToB64(b){ return new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result.split(',')[1]);fr.readAsDataURL(b);}); }
 
 // 이미지(비디오/사진)를 중앙 정사각형으로 잘라 cv에 그림
-function drawSquare(src,w,h,inset){
-  const side=Math.min(w,h)*(1-2*inset), sx=(w-side)/2, sy=(h-side)/2;
+let zoom=2, hwZoom=false;
+function drawSquare(src,w,h,inset,z){
+  const side=Math.min(w,h)/(z||1)*(1-2*inset), sx=(w-side)/2, sy=(h-side)/2;
   ctx.drawImage(src,sx,sy,side,side,0,0,cv.width,cv.height);
 }
 function signature(){
@@ -243,7 +248,7 @@ async function runOnce(force){
 async function startLive(){
   if(!backend) await initBackend();
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280}},audio:false});
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080}},audio:false});
   }catch(e){
     stream=null;
     setStatus('이 화면에서는 카메라 실시간 접근이 막혀 있어요. 📸 사진으로 인식을 눌러주세요.');
@@ -251,16 +256,35 @@ async function startLive(){
     return;
   }
   video.srcObject=stream; await video.play();
+  setupZoom();
   video.style.display='block'; $('still').style.display='none'; $('ph').style.display='none';
   $('frame').style.display='block'; $('pulse').style.display='flex';
   $('startBtn').textContent='정지'; lastSig=null; $('nowBtn').style.display='block';
   setStatus('실시간 인식 중');
   loop();
 }
+function setupZoom(){
+  const track=stream.getVideoTracks()[0];
+  let caps={}; try{ caps=track.getCapabilities?track.getCapabilities():{}; }catch(_){}
+  const zr=$('zoom');
+  hwZoom=!!(caps.zoom && caps.zoom.max>1);
+  if(hwZoom){ zr.min=caps.zoom.min||1; zr.max=Math.min(caps.zoom.max,10); zr.step=caps.zoom.step||0.1; }
+  $('zoomRow').style.display='flex';
+  applyZoom();
+}
+async function applyZoom(){
+  zoom=+$('zoom').value; $('zoomVal').textContent=zoom.toFixed(1)+'x'; lastSig=null;
+  if(hwZoom && stream){
+    try{ await stream.getVideoTracks()[0].applyConstraints({advanced:[{zoom}]}); video.style.transform='none'; return; }
+    catch(_){ hwZoom=false; }
+  }
+  video.style.transform=`scale(${zoom})`;
+}
+$('zoom').oninput=applyZoom;
 function loop(){
   clearTimeout(timer);
   if(!stream) return;
-  if(video.videoWidth){ drawSquare(video,video.videoWidth,video.videoHeight,0.14); runOnce(false); }
+  if(video.videoWidth){ drawSquare(video,video.videoWidth,video.videoHeight,0.08,hwZoom?1:zoom); runOnce(false); }
   timer=setTimeout(loop, +$('interval').value);
 }
 function stopLive(){
@@ -268,7 +292,7 @@ function stopLive(){
   if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
   $('pulse').style.display='none'; $('startBtn').textContent='실시간 시작';
 }
-$('nowBtn').onclick=()=>{ if(stream&&video.videoWidth){ backoffUntil=0; drawSquare(video,video.videoWidth,video.videoHeight,0.14); runOnce(true);} };
+$('nowBtn').onclick=()=>{ if(stream&&video.videoWidth){ backoffUntil=0; drawSquare(video,video.videoWidth,video.videoHeight,0.08,hwZoom?1:zoom); runOnce(true);} };
 $('startBtn').onclick=()=> stream? (stopLive(),setStatus('정지됨')) : startLive();
 
 // ---------- 사진 모드 ----------
@@ -278,7 +302,7 @@ $('fileIn').onchange=async e=>{
   if(!backend) await initBackend();
   const url=URL.createObjectURL(f), img=$('still');
   img.onload=async()=>{
-    video.style.display='none'; img.style.display='block'; $('ph').style.display='none'; $('frame').style.display='none';
+    video.style.display='none'; img.style.display='block'; $('zoomRow').style.display='none'; $('ph').style.display='none'; $('frame').style.display='none';
     drawSquare(img,img.naturalWidth,img.naturalHeight,0);
     await runOnce(true);
   };
