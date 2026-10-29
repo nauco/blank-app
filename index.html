@@ -38,7 +38,7 @@
   .hint{color:var(--muted);font-size:13px;margin-top:10px;line-height:1.45}
   .bar{height:6px;background:var(--line);border-radius:4px;margin-top:10px;overflow:hidden}
   .bar>div{height:100%;width:0;background:var(--ok);transition:width .3s}
-  .status{font-size:12px;color:var(--muted);margin:10px 2px 0;min-height:16px}
+  .status{font-size:13px;word-break:break-all;color:var(--muted);margin:10px 2px 0;min-height:16px}
   .hist{margin-top:14px}
   .hist h2{font-size:14px;color:var(--muted);font-weight:600;margin:0 0 8px}
   .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -73,6 +73,7 @@
     <label class="btn secondary" id="snapBtn" for="fileIn">📸 사진으로 인식</label>
     <input type="file" id="fileIn" accept="image/*" capture="environment">
   </div>
+  <button id="nowBtn" class="secondary" style="width:100%;margin-bottom:12px;display:none">🎯 지금 이 화면 인식</button>
 
   <div class="card">
     <div class="result">
@@ -170,6 +171,7 @@ async function initBackend(){
   $('keyBox').style.display='block';
   try{ $('keyIn').value=localStorage.getItem('flag_api_key')||''; }catch(e){}
 }
+initBackend();
 $('keySave').onclick=()=>{ try{ localStorage.setItem('flag_api_key',$('keyIn').value.trim()); }catch(e){} setStatus('키 저장됨'); };
 
 async function identify(blob, b64){
@@ -179,7 +181,8 @@ async function identify(blob, b64){
   }
   const key=$('keyIn').value.trim();
   if(!key) throw {code:'no_key',message:'API 키를 입력해주세요'};
-  const r=await fetch('https://api.anthropic.com/v1/messages',{
+  let r;
+  try{ r=await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01',
              'anthropic-dangerous-direct-browser-access':'true'},
@@ -187,11 +190,15 @@ async function identify(blob, b64){
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
         {type:'text',text:PROMPT}]}]})
-  });
+  }); }catch(netErr){ throw {code:'net',message:'네트워크 오류: '+(netErr.message||netErr)}; }
   if(r.status===429) throw {code:'rate_limited',message:'요청이 많아 잠시 쉬어요'};
-  if(!r.ok) throw {code:'http',message:`API 오류 ${r.status}`};
+  if(!r.ok){
+    let msg=''; try{ const ej=await r.json(); msg=(ej.error&&ej.error.message)||JSON.stringify(ej).slice(0,160); }catch(_){}
+    throw {code:'http',message:`API 오류 ${r.status}: ${msg}`};
+  }
   const j=await r.json();
-  return parseJSON(j.content?.map(c=>c.text||'').join(''));
+  const txt=(j.content||[]).map(c=>c.text||'').join('');
+  try{ return parseJSON(txt); }catch(_){ throw {code:'parse',message:'응답 해석 실패: '+txt.slice(0,120)}; }
 }
 
 function canvasToBlob(){ return new Promise(res=>cv.toBlob(res,'image/jpeg',0.82)); }
@@ -228,7 +235,7 @@ async function runOnce(force){
     if(code==='rate_limited'){ backoffUntil=Date.now()+10000; setStatus('요청이 많아 10초 쉬었다 이어갑니다'); }
     else if(code==='not_granted'){ setStatus('Claude 사용 권한이 거부되었어요'); stopLive(); }
     else if(code==='no_key'){ setStatus(e.message); stopLive(); }
-    else { backoffUntil=Date.now()+4000; setStatus('오류: '+(e.message||e)); }
+    else { backoffUntil=Date.now()+4000; setStatus('⚠️ '+(e.message||e)); }
   }finally{ busy=false; }
 }
 
@@ -246,7 +253,7 @@ async function startLive(){
   video.srcObject=stream; await video.play();
   video.style.display='block'; $('still').style.display='none'; $('ph').style.display='none';
   $('frame').style.display='block'; $('pulse').style.display='flex';
-  $('startBtn').textContent='정지'; lastSig=null;
+  $('startBtn').textContent='정지'; lastSig=null; $('nowBtn').style.display='block';
   setStatus('실시간 인식 중');
   loop();
 }
@@ -261,6 +268,7 @@ function stopLive(){
   if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
   $('pulse').style.display='none'; $('startBtn').textContent='실시간 시작';
 }
+$('nowBtn').onclick=()=>{ if(stream&&video.videoWidth){ backoffUntil=0; drawSquare(video,video.videoWidth,video.videoHeight,0.14); runOnce(true);} };
 $('startBtn').onclick=()=> stream? (stopLive(),setStatus('정지됨')) : startLive();
 
 // ---------- 사진 모드 ----------
