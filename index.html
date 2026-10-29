@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>실시간 국기 인식기</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e9ecf2; --muted:#8b93a3;
+    --accent:#4f8cff; --ok:#3ecf8e; --warn:#f5a524; --bad:#ef5b5b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Noto Sans KR",sans-serif}
+  main{max-width:520px;margin:0 auto;padding:16px 14px 40px}
+  h1{font-size:20px;margin:4px 0 2px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 14px}
+  .stage{position:relative;aspect-ratio:1/1;background:#000;border-radius:16px;overflow:hidden;border:1px solid var(--line)}
+  video,.stage img{width:100%;height:100%;object-fit:cover;display:block}
+  .frame{position:absolute;inset:14%;border:2px dashed rgba(255,255,255,.55);border-radius:10px;pointer-events:none}
+  .placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:8px;color:var(--muted);font-size:14px;text-align:center;padding:20px}
+  .placeholder .big{font-size:48px}
+  .pulse{position:absolute;top:10px;left:10px;display:none;align-items:center;gap:6px;background:rgba(0,0,0,.55);
+    padding:5px 10px;border-radius:999px;font-size:12px}
+  .pulse i{width:8px;height:8px;border-radius:50%;background:var(--bad);animation:p 1.2s infinite}
+  @keyframes p{50%{opacity:.25}}
+  .controls{display:flex;gap:8px;margin:12px 0}
+  button,.btn{flex:1;border:0;border-radius:12px;padding:13px 10px;font-size:15px;font-weight:600;cursor:pointer;
+    background:var(--accent);color:#fff;text-align:center}
+  button.secondary,.btn.secondary{background:var(--panel);color:var(--text);border:1px solid var(--line)}
+  button:disabled{opacity:.45;cursor:default}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
+  .result{display:flex;align-items:center;gap:14px;min-height:76px}
+  .emoji{font-size:54px;line-height:1;width:64px;text-align:center}
+  .name{font-size:24px;font-weight:700}
+  .en{color:var(--muted);font-size:13px;margin-top:2px}
+  .hint{color:var(--muted);font-size:13px;margin-top:10px;line-height:1.45}
+  .bar{height:6px;background:var(--line);border-radius:4px;margin-top:10px;overflow:hidden}
+  .bar>div{height:100%;width:0;background:var(--ok);transition:width .3s}
+  .status{font-size:12px;color:var(--muted);margin:10px 2px 0;min-height:16px}
+  .hist{margin-top:14px}
+  .hist h2{font-size:14px;color:var(--muted);font-weight:600;margin:0 0 8px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 10px;font-size:13px}
+  .key{margin-top:14px;display:none}
+  .key label{font-size:13px;color:var(--muted);display:block;margin-bottom:6px;line-height:1.45}
+  .key input{width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);background:#0b0d11;color:var(--text);font-size:14px}
+  .row{display:flex;gap:8px;margin-top:8px}
+  .seg{display:flex;gap:6px;margin-top:10px;font-size:13px;color:var(--muted);align-items:center}
+  .seg select{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px}
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>🏳️ 실시간 국기 인식기</h1>
+  <p class="sub">카메라를 국기에 비추면 Claude가 어느 나라인지 바로 알려줘요.</p>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline muted autoplay style="display:none"></video>
+    <img id="still" alt="" style="display:none">
+    <div class="frame" id="frame" style="display:none"></div>
+    <div class="placeholder" id="ph">
+      <div class="big">📷</div>
+      <div>아래 <b>실시간 시작</b>을 누르세요.<br>카메라가 막힌 환경이면 사진 촬영 모드로 바뀝니다.</div>
+    </div>
+    <div class="pulse" id="pulse"><i></i><span>LIVE</span></div>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn">실시간 시작</button>
+    <label class="btn secondary" id="snapBtn" for="fileIn">📸 사진으로 인식</label>
+    <input type="file" id="fileIn" accept="image/*" capture="environment">
+  </div>
+
+  <div class="card">
+    <div class="result">
+      <div class="emoji" id="emoji">❔</div>
+      <div>
+        <div class="name" id="name">대기 중</div>
+        <div class="en" id="en">국기를 비춰주세요</div>
+      </div>
+    </div>
+    <div class="bar"><div id="conf"></div></div>
+    <div class="hint" id="hint"></div>
+  </div>
+  <div class="status" id="status"></div>
+
+  <div class="seg">인식 간격
+    <select id="interval">
+      <option value="1500">1.5초</option>
+      <option value="2500" selected>2.5초</option>
+      <option value="4000">4초</option>
+    </select>
+  </div>
+
+  <div class="key card" id="keyBox">
+    <label>이 페이지를 Claude 밖(내 브라우저)에서 열었다면 Anthropic API 키가 필요해요. 키는 이 브라우저에만 저장됩니다.</label>
+    <input id="keyIn" type="password" placeholder="sk-ant-..." autocomplete="off">
+    <div class="row"><button id="keySave" class="secondary">저장</button></div>
+  </div>
+
+  <div class="hist">
+    <h2>최근 인식</h2>
+    <div class="chips" id="chips"></div>
+  </div>
+</main>
+
+<canvas id="cv" width="448" height="448" style="display:none"></canvas>
+<canvas id="small" width="16" height="16" style="display:none"></canvas>
+
+<script>
+const $ = id => document.getElementById(id);
+const video=$('video'), cv=$('cv'), ctx=cv.getContext('2d'), sm=$('small'), sctx=sm.getContext('2d',{willReadFrequently:true});
+let backend=null;          // 'sample' | 'api'
+let sampleFn=null;
+let stream=null, timer=null, busy=false, lastSig=null, backoffUntil=0, lastIso='';
+const hist=[];
+
+const PROMPT = `You are a national-flag recognizer. Look at the image and identify the national (or well-known territory/organization) flag in it.
+Reply with ONLY a JSON object, no other text:
+{"flag":true|false,"iso2":"two-letter ISO code lowercase or empty","name_ko":"Korean country name","name_en":"English name","confidence":0.0-1.0,"hint":"one short Korean sentence on the deciding visual feature, mention a look-alike flag if relevant"}
+If no flag is clearly visible, set "flag":false and leave other fields empty.`;
+
+function setStatus(t){ $('status').textContent=t||''; }
+function flagEmoji(iso){
+  if(!/^[a-z]{2}$/i.test(iso||'')) return '🏳️';
+  return iso.toUpperCase().replace(/./g,c=>String.fromCodePoint(127397+c.charCodeAt(0)));
+}
+function parseJSON(t){
+  if(t && typeof t==='object') return t;
+  const m=String(t||'').match(/\{[\s\S]*\}/);
+  if(!m) throw new Error('응답 해석 실패');
+  return JSON.parse(m[0]);
+}
+function show(r){
+  if(!r.flag){
+    $('emoji').textContent='🔍'; $('name').textContent='국기 없음';
+    $('en').textContent='화면 중앙 점선 안에 국기를 맞춰주세요'; $('conf').style.width='0'; $('hint').textContent=''; return;
+  }
+  const c=Math.max(0,Math.min(1,Number(r.confidence)||0));
+  $('emoji').textContent=flagEmoji(r.iso2);
+  $('name').textContent=r.name_ko||r.name_en||'?';
+  $('en').textContent=`${r.name_en||''} · 확신도 ${Math.round(c*100)}%`;
+  $('conf').style.width=(c*100)+'%';
+  $('conf').style.background = c>=.75?'var(--ok)':c>=.45?'var(--warn)':'var(--bad)';
+  $('hint').textContent=r.hint||'';
+  if(r.iso2 && r.iso2!==lastIso){
+    lastIso=r.iso2;
+    hist.unshift(`${flagEmoji(r.iso2)} ${r.name_ko||r.name_en}`);
+    hist.length=Math.min(hist.length,12);
+    $('chips').innerHTML=hist.map(h=>`<span class="chip">${h}</span>`).join('');
+  }
+}
+
+// ---------- AI 백엔드 ----------
+async function initBackend(){
+  if(window.claude && typeof window.claude.use==='function'){
+    try{
+      const s=await window.claude.use('sample');
+      if(s){
+        let ok=true;
+        try{ const lim=await s.limits(); ok=!!(lim&&lim.images); }catch(e){}
+        if(ok){ sampleFn=s; backend='sample'; return; }
+      }
+    }catch(e){}
+  }
+  backend='api';
+  $('keyBox').style.display='block';
+  try{ $('keyIn').value=localStorage.getItem('flag_api_key')||''; }catch(e){}
+}
+$('keySave').onclick=()=>{ try{ localStorage.setItem('flag_api_key',$('keyIn').value.trim()); }catch(e){} setStatus('키 저장됨'); };
+
+async function identify(blob, b64){
+  if(backend==='sample'){
+    const res=await sampleFn(PROMPT,{images:[blob],modelTier:'quick',cache:false});
+    return parseJSON(res.text);
+  }
+  const key=$('keyIn').value.trim();
+  if(!key) throw {code:'no_key',message:'API 키를 입력해주세요'};
+  const r=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01',
+             'anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-haiku-5-5',max_tokens:200,
+      messages:[{role:'user',content:[
+        {type:'image',source:{type:'base64',media_type:'image/jpeg',data:b64}},
+        {type:'text',text:PROMPT}]}]})
+  });
+  if(r.status===429) throw {code:'rate_limited',message:'요청이 많아 잠시 쉬어요'};
+  if(!r.ok) throw {code:'http',message:`API 오류 ${r.status}`};
+  const j=await r.json();
+  return parseJSON(j.content?.map(c=>c.text||'').join(''));
+}
+
+function canvasToBlob(){ return new Promise(res=>cv.toBlob(res,'image/jpeg',0.82)); }
+function blobToB64(b){ return new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result.split(',')[1]);fr.readAsDataURL(b);}); }
+
+// 이미지(비디오/사진)를 중앙 정사각형으로 잘라 cv에 그림
+function drawSquare(src,w,h,inset){
+  const side=Math.min(w,h)*(1-2*inset), sx=(w-side)/2, sy=(h-side)/2;
+  ctx.drawImage(src,sx,sy,side,side,0,0,cv.width,cv.height);
+}
+function signature(){
+  sctx.drawImage(cv,0,0,16,16);
+  const d=sctx.getImageData(0,0,16,16).data, out=new Uint8Array(256);
+  for(let i=0;i<256;i++) out[i]=(d[i*4]*.3+d[i*4+1]*.59+d[i*4+2]*.11)|0;
+  return out;
+}
+function diff(a,b){ if(!a||!b) return 999; let s=0; for(let i=0;i<a.length;i++) s+=Math.abs(a[i]-b[i]); return s/a.length; }
+
+async function runOnce(force){
+  if(busy || Date.now()<backoffUntil) return;
+  busy=true;
+  try{
+    const sig=signature();
+    if(!force && diff(sig,lastSig)<6){ busy=false; return; }   // 화면이 거의 안 바뀌면 재요청 안 함
+    setStatus('인식 중…');
+    const blob=await canvasToBlob();
+    const b64= backend==='api'? await blobToB64(blob):null;
+    const r=await identify(blob,b64);
+    lastSig=sig;
+    show(r);
+    setStatus(stream?'실시간 인식 중':'');
+  }catch(e){
+    const code=e&&e.code;
+    if(code==='rate_limited'){ backoffUntil=Date.now()+10000; setStatus('요청이 많아 10초 쉬었다 이어갑니다'); }
+    else if(code==='not_granted'){ setStatus('Claude 사용 권한이 거부되었어요'); stopLive(); }
+    else if(code==='no_key'){ setStatus(e.message); stopLive(); }
+    else { backoffUntil=Date.now()+4000; setStatus('오류: '+(e.message||e)); }
+  }finally{ busy=false; }
+}
+
+// ---------- 실시간 카메라 ----------
+async function startLive(){
+  if(!backend) await initBackend();
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280}},audio:false});
+  }catch(e){
+    stream=null;
+    setStatus('이 화면에서는 카메라 실시간 접근이 막혀 있어요. 📸 사진으로 인식을 눌러주세요.');
+    $('ph').querySelector('div:last-child').innerHTML='실시간 카메라를 쓸 수 없는 환경이에요.<br><b>📸 사진으로 인식</b>을 누르면 카메라로 바로 찍어 인식합니다.';
+    return;
+  }
+  video.srcObject=stream; await video.play();
+  video.style.display='block'; $('still').style.display='none'; $('ph').style.display='none';
+  $('frame').style.display='block'; $('pulse').style.display='flex';
+  $('startBtn').textContent='정지'; lastSig=null;
+  setStatus('실시간 인식 중');
+  loop();
+}
+function loop(){
+  clearTimeout(timer);
+  if(!stream) return;
+  if(video.videoWidth){ drawSquare(video,video.videoWidth,video.videoHeight,0.14); runOnce(false); }
+  timer=setTimeout(loop, +$('interval').value);
+}
+function stopLive(){
+  clearTimeout(timer);
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  $('pulse').style.display='none'; $('startBtn').textContent='실시간 시작';
+}
+$('startBtn').onclick=()=> stream? (stopLive(),setStatus('정지됨')) : startLive();
+
+// ---------- 사진 모드 ----------
+$('fileIn').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  stopLive();
+  if(!backend) await initBackend();
+  const url=URL.createObjectURL(f), img=$('still');
+  img.onload=async()=>{
+    video.style.display='none'; img.style.display='block'; $('ph').style.display='none'; $('frame').style.display='none';
+    drawSquare(img,img.naturalWidth,img.naturalHeight,0);
+    await runOnce(true);
+  };
+  img.src=url; e.target.value='';
+};
+</script>
+</body>
+</html>
